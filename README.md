@@ -28,9 +28,14 @@ python resources/audit_pipeline.py <target-file-or-directory>
 
 脚本会自动检测本机可用工具；未安装的层会标记为 skipped，不影响其他层运行。
 
+## 案例
+
+- [十层工作流 vs 单层 CLE 探针：有效性证据与增量分析（2026-09-18）](docs/cases/case_ten_layer_vs_single_cle_20260918.md)
+
 ## 目录结构
 
 - `SKILL.md`：完整使用说明与工作流定义。
 - `resources/audit_pipeline.py`：十层审查主脚本。
 - `rules/`：审查规则与配置。
 - `examples/`：示例代码。
+- `docs/cases/`：真实审查案例与有效性分析。
