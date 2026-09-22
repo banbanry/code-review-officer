@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 PEF 多层代码审查工作流编排器
 组合开源静态分析工具 + CLE 物理不变量探针，输出统一审查报告。
@@ -63,17 +63,24 @@ def detect_tools() -> dict:
     # gitleaks
     if shutil.which("gitleaks"):
         tools["gitleaks"] = shutil.which("gitleaks")
-    elif os.path.exists("/tmp/gitleaks"):
-        tools["gitleaks"] = "/tmp/gitleaks"
-    
+    else:
+        for p in ["D:/tools/gitleaks/gitleaks.exe", "/tmp/gitleaks", os.path.expanduser("~/tools/gitleaks/gitleaks.exe")]:
+            if os.path.exists(p):
+                tools["gitleaks"] = p
+                break
+
     # trivy
     if shutil.which("trivy"):
         tools["trivy"] = shutil.which("trivy")
-    elif os.path.exists("/tmp/trivy"):
-        tools["trivy"] = "/tmp/trivy"
-    
+    else:
+        for p in ["D:/tools/trivy/trivy.exe", "/tmp/trivy", os.path.expanduser("~/tools/trivy/trivy.exe")]:
+            if os.path.exists(p):
+                tools["trivy"] = p
+                break
+
     # CLE 探针（检测 skill 目录）
     cle_paths = [
+        os.path.expanduser("~/.trae-cn/skills/cle-code-probe/resources/cle_deploy.py"),
         os.path.expanduser("~/.trae/skills/cle-code-probe/resources/cle_deploy.py"),
         os.path.expanduser("~/.doubao/agent_mode/workspace/.user_skills/cle-code-probe/resources/cle_deploy.py"),
         "/home/user/.doubao/agent_mode/workspace/.user_skills/cle-code-probe/resources/cle_deploy.py",
@@ -85,6 +92,7 @@ def detect_tools() -> dict:
     
     # L9 PEF 结构化审查（检测 skill 目录）
     pef_paths = [
+        os.path.expanduser("~/AppData/Local/Doubao/User Data/Default/.doubao/agent_mode/workspace/.user_skills/pef-structured-review/resources/pef_reviewer.py"),
         os.path.expanduser("~/.doubao/agent_mode/workspace/.user_skills/pef-structured-review/resources/pef_reviewer.py"),
         "/home/user/.doubao/agent_mode/workspace/.user_skills/pef-structured-review/resources/pef_reviewer.py",
     ]
@@ -150,19 +158,23 @@ def run_compiler_check(target: str, compiler: str) -> dict:
 
 
 def run_smoke_test(target: str, compiler: str) -> dict:
-    """L7: 冒烟测试 - 编译后运行，检测段错误/崩溃"""
+    """L7: 冒烟测试 - 多语言自适应（C/C++ 编译运行 + Python 导入检测）"""
     import tempfile
     findings = []
     try:
-        # 只对有 main 函数的单文件做冒烟测试
+        # Python 项目冒烟测试：语法编译 + 关键模块导入
+        if os.path.isdir(target) or (os.path.isfile(target) and target.endswith(".py")):
+            return _run_python_smoke_test(target, findings)
+        
+        # C/C++ 单文件冒烟测试
         if not os.path.isfile(target) or not target.endswith((".c", ".cpp")):
-            return {"status": "skipped", "findings": [], "count": 0, "reason": "仅支持单文件 C/C++ 冒烟测试"}
+            return {"status": "skipped", "findings": findings, "count": len(findings), "reason": "非支持的文件类型"}
         
         # 检查是否有 main 函数
         with open(target, "r", errors="ignore") as f:
             content = f.read()
         if "main(" not in content:
-            return {"status": "skipped", "findings": [], "count": 0, "reason": "无 main 函数，非可执行程序"}
+            return {"status": "skipped", "findings": findings, "count": len(findings), "reason": "无 main 函数，非可执行程序"}
         
         output_bin = tempfile.mktemp(suffix=".out")
         # 编译
@@ -240,6 +252,81 @@ def run_smoke_test(target: str, compiler: str) -> dict:
     except Exception as e:
         return {"status": "error", "findings": [], "error": str(e)}
 
+
+
+def _run_python_smoke_test(target: str, findings: list) -> dict:
+    """Python 冒烟测试：语法编译检查 + 入口脚本导入测试"""
+    import py_compile
+    import sys
+
+    # 1. 收集 Python 文件
+    py_files = []
+    if os.path.isfile(target) and target.endswith(".py"):
+        py_files = [target]
+    elif os.path.isdir(target):
+        for root, dirs, files in os.walk(target):
+            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ('venv', 'env', '__pycache__')]
+            for f in files:
+                if f.endswith('.py'):
+                    py_files.append(os.path.join(root, f))
+            if len(py_files) >= 20:
+                break
+
+    # 2. 语法编译检查
+    syntax_errors = 0
+    for f in py_files:
+        try:
+            py_compile.compile(f, doraise=True)
+        except py_compile.PyCompileError as e:
+            syntax_errors += 1
+            findings.append({
+                "layer": "L7-Smoke",
+                "tool": "python-smoke",
+                "file": f,
+                "line": 0,
+                "severity": "p0",
+                "category": "SYNTAX_ERROR",
+                "message": f"Python 语法错误: {str(e)[:200]}",
+            })
+
+    # 3. 入口脚本导入测试
+    if os.path.isfile(target) and target.endswith(".py"):
+        try:
+            mod_name = os.path.basename(target)[:-3]
+            sys.path.insert(0, os.path.dirname(target))
+            __import__(mod_name)
+            findings.append({
+                "layer": "L7-Smoke",
+                "tool": "python-smoke",
+                "file": target,
+                "line": 0,
+                "severity": "info",
+                "category": "IMPORT_OK",
+                "message": f"模块 {mod_name} 导入成功，无语法/导入错误",
+            })
+        except ImportError as e:
+            findings.append({
+                "layer": "L7-Smoke",
+                "tool": "python-smoke",
+                "file": target,
+                "line": 0,
+                "severity": "p1",
+                "category": "IMPORT_FAILED",
+                "message": f"模块导入失败: {str(e)[:200]}",
+            })
+        except Exception as e:
+            findings.append({
+                "layer": "L7-Smoke",
+                "tool": "python-smoke",
+                "file": target,
+                "line": 0,
+                "severity": "p2",
+                "category": "RUNTIME_IMPORT_ERROR",
+                "message": f"导入时运行时错误: {type(e).__name__}: {str(e)[:150]}",
+            })
+
+    return {"status": "ok", "findings": findings, "count": len(findings),
+            "py_files_checked": len(py_files), "syntax_errors": syntax_errors}
 
 def run_semgrep(target: str, binary: str) -> dict:
     """L1: Semgrep 多语言静态分析"""
@@ -412,17 +499,18 @@ def run_cle_probe(target: str, script: str) -> dict:
     """L6: CLE 物理不变量探针（AI 幻觉 + 运行时 bug）"""
     findings = []
     try:
-        # 对 C/C++ 文件运行 CLE audit
-        c_files = []
-        if os.path.isfile(target) and target.endswith((".c", ".cpp", ".h", ".hpp")):
-            c_files = [target]
+        # 对 C/C++ 和 Python 文件运行 CLE audit
+        files = []
+        if os.path.isfile(target):
+            if target.endswith((".c", ".cpp", ".h", ".hpp", ".py")):
+                files = [target]
         elif os.path.isdir(target):
-            for ext in ("*.c", "*.cpp", "*.h", "*.hpp"):
-                c_files.extend(Path(target).rglob(ext))
+            for ext in ("*.c", "*.cpp", "*.h", "*.hpp", "*.py"):
+                files.extend(Path(target).rglob(ext))
         
-        for f in c_files[:20]:  # 限制最多 20 个文件
+        for f in files[:30]:  # 限制最多 30 个文件
             result = subprocess.run(
-                ["python3", script, "audit", str(f)],
+                ["python", script, "audit", str(f)],
                 capture_output=True, text=True, timeout=120
             )
             if result.returncode in (0, 1) and result.stdout.strip():
@@ -439,6 +527,8 @@ def run_cle_probe(target: str, script: str) -> dict:
                             "message": finding.get("description", ""),
                             "causal_chain": finding.get("causal_chain", ""),
                             "event_id": finding.get("event_id", ""),
+                            "confidence": finding.get("confidence", "LOW"),
+                            "source": finding.get("source", ""),
                         })
                 except json.JSONDecodeError:
                     pass
@@ -664,6 +754,8 @@ def run_pef_review(target: str, script: str) -> dict:
 # ========== 报告合并与裁决 ==========
 
 SEVERITY_ORDER = {"critical": 0, "p0": 0, "high": 1, "p1": 1, "medium": 2, "p2": 2, "low": 3, "p3": 3, "info": 4, "warning": 2}
+# Task8: 置信分级排序优先级（HIGH 置顶优先人工审查；LOW 垫底进独立桶）
+CONFIDENCE_ORDER = {"HIGH": 0, "MED": 1, "LOW": 2}
 
 def merge_reports(layer_results: dict) -> dict:
     """合并各层报告，统一裁决"""
@@ -697,8 +789,15 @@ def merge_reports(layer_results: dict) -> dict:
                 "findings_count": 0,
             }
     
-    # 按严重级排序
-    all_findings.sort(key=lambda x: SEVERITY_ORDER.get(x.get("severity", "info"), 9))
+    # 按严重级排序（Task8: 增加置信分级高低，HIGH 置顶优先人工审查）
+    all_findings.sort(key=lambda x: (
+        CONFIDENCE_ORDER.get(x.get("confidence", "LOW"), 2),
+        SEVERITY_ORDER.get(x.get("severity", "info"), 9),
+    ))
+
+    # Task8: LOW 置信告警进独立桶（只降级/分桶，不静默删除），且不参与裁决计数
+    low_confidence_findings = [f for f in all_findings if f.get("confidence") == "LOW"]
+    all_findings = [f for f in all_findings if f.get("confidence") != "LOW"]
     
     # 统计
     severity_counts = {}
@@ -740,6 +839,7 @@ def merge_reports(layer_results: dict) -> dict:
         "top_files": dict(sorted(file_counts.items(), key=lambda x: -x[1])[:10]),
         "layer_summary": layer_summary,
         "findings": all_findings,
+        "low_confidence_findings": low_confidence_findings,
     }
 
 
@@ -788,6 +888,17 @@ def format_text_report(report: dict) -> str:
                 lines.append(f"      修复建议: {f['suggestion'][:100]}")
         if len(report["findings"]) > 30:
             lines.append(f"  ... 还有 {len(report['findings']) - 30} 条，详见 JSON")
+
+    # Task8: LOW 置信告警独立桶（仅展示，不参与裁决）
+    if report.get("low_confidence_findings"):
+        lowlist = report["low_confidence_findings"]
+        lines.append("")
+        lines.append(f"--- LOW置信告警独立桶（{len(lowlist)} 条，不参与裁决）---")
+        for f in lowlist[:30]:
+            lines.append(f"  ({f['layer']}) {f.get('severity', 'info').upper()} | {f.get('file', '')}:{f.get('line', 0)}")
+            lines.append(f"      {f.get('category', '')}: {str(f.get('message', ''))[:90]}")
+        if len(lowlist) > 30:
+            lines.append(f"  ... 还有 {len(lowlist) - 30} 条 LOW，详见 JSON")
     lines.append("")
     lines.append("=" * 70)
     return "\n".join(lines)
@@ -870,15 +981,14 @@ def main():
         layer_results["L6-CLE-Probe"] = run_cle_probe(target, tools["cle_probe"])
         print(f"     -> {layer_results['L6-CLE-Probe'].get('count', 0)} 项")
     
-    # L7 冒烟测试（仅单文件 C/C++ 且有 main）
-    if compiler:
-        print("[L7] 运行冒烟测试（编译+运行）...")
-        layer_results["L7-Smoke"] = run_smoke_test(target, compiler)
-        st = layer_results["L7-Smoke"]
-        if st["status"] == "skipped":
-            print(f"     -> 跳过: {st.get('reason', '')}")
-        else:
-            print(f"     -> {st.get('count', 0)} 项")
+    # L7 冒烟测试（多语言自适应：C/C++ 编译运行 + Python 导入检测）
+    print("[L7] 运行冒烟测试（多语言自适应）...")
+    layer_results["L7-Smoke"] = run_smoke_test(target, compiler)
+    st = layer_results["L7-Smoke"]
+    if st["status"] == "skipped":
+        print(f"     -> 跳过: {st.get('reason', '')}")
+    else:
+        print(f"     -> {st.get('count', 0)} 项")
     
     # L8 语义审查（LLM 理解代码意图）
     print("[L8] 运行 LLM 语义审查（逻辑正确性+AI幻觉检测）...")
