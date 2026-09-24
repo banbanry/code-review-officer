@@ -89,6 +89,26 @@ PY_RULES = [
         "pattern": r'def\s+\w+\s*\([^)]*=\s*\[\s*\]',
         "message": "默认参数 [] 是可变的，所有调用会共享，建议用 None",
     },
+    # --- PEF 第一序列补充规则（2026-09-24）---
+    {
+        "id": "P-013",
+        "severity": "p2",
+        "category": "HARDCODED_PATH",
+        "name": "硬编码绝对路径",
+        # 匹配 r'D:\...' 或 "C:\..." 形式的 Windows 绝对路径
+        "pattern": r'[rf]?["\'][A-Za-z]:[\\/][^"\']*["\']',
+        "message": "硬编码绝对路径，换机器就崩；应改用 os.path.join(BASE_DIR, ...) 或配置项",
+    },
+    {
+        "id": "P-011",
+        "severity": "p3",
+        "category": "F_NOT_TRACEABLE",
+        "name": "日志缺业务上下文",
+        # except 块里 logger 消息是纯文字（没有 %s 也没有 f-string 变量）
+        # 多行匹配：except 后面 1-3 行内有 logger.xxx('纯文字')
+        "pattern": r'except[^\n]*:\s*\n(?:[ \t]*[^\n]*\n){0,2}[ \t]*logger\.(?:warning|error|info)\(["\'][^%{]*["\']\s*\)',
+        "message": "日志没有业务上下文变量（订单号/批次号/文件名），F 结果不可追溯",
+    },
 ]
 
 
@@ -106,10 +126,14 @@ def scan_file(filepath: str) -> list:
         return findings
 
     with open(filepath, 'r', errors='ignore') as f:
-        lines = f.readlines()
+        content = f.read()
+    lines = content.splitlines()
 
     for i, line in enumerate(lines, 1):
         for rule in rules:
+            # 多行规则跳过逐行匹配（后面单独跑）
+            if '\n' in rule["pattern"]:
+                continue
             if re.search(rule["pattern"], line):
                 findings.append({
                     "layer": "LOCAL-RULES",
@@ -120,6 +144,23 @@ def scan_file(filepath: str) -> list:
                     "line": i,
                     "message": f'[{rule["id"]}] {rule["name"]}: {rule["message"]}',
                 })
+
+    # 多行规则：对整个文件内容跑
+    for rule in rules:
+        if '\n' not in rule["pattern"]:
+            continue
+        for m in re.finditer(rule["pattern"], content):
+            # 计算匹配开始的行号
+            line_no = content[:m.start()].count('\n') + 1
+            findings.append({
+                "layer": "LOCAL-RULES",
+                "rule_id": rule["id"],
+                "severity": rule["severity"],
+                "category": rule["category"],
+                "file": filepath,
+                "line": line_no,
+                "message": f'[{rule["id"]}] {rule["name"]}: {rule["message"]}',
+            })
 
     return findings
 
