@@ -651,8 +651,27 @@ def run_semantic_review(target: str) -> dict:
 - 输出有没有不一致？
 - 时序上有没有竞态？
 
-### 第五步：七维评分（输出问题时按严重级标注）
-- P0：因果链完全断裂，崩溃级（空指针、除零、竞态导致数据损坏）
+## 各语言重点关注（按语言切换）
+
+### C/C++ 代码重点
+- malloc/free 配对：每个 malloc 有没有对应的 free？错误路径有没有释放？
+- 缓冲区溢出：数组访问有没有边界检查？strcpy/strcat/sprintf 有没有换成安全版本？
+- 指针空检查：malloc 返回值有没有检查？指针解引用前有没有判空？
+- 整数溢出：有符号数运算会不会溢出？无符号数会不会下溢 wrap？
+
+### Python 代码重点
+- 危险函数：eval/exec/os.system/subprocess shell=True 有没有用户输入注入风险？
+- 硬编码密钥：API key/密码/token 有没有写死在代码里？
+- 异常处理：except Exception 是不是静默吞错？有没有加日志？
+- 类型安全：有没有类型注解？有没有空值处理？
+
+### 通用重点（所有语言）
+- 边界条件：空值、极值、溢出有没有显式处理？
+- 资源管理：文件句柄、内存、连接有没有正确释放？
+- 时序因果：有没有结果先于原因？有没有断裂的调用链？
+
+## 严重级评分
+- P0：因果链完全断裂，崩溃级（空指针解引用、除零、竞态导致数据损坏）
 - P1：因果链有缺口，高危（边界未校验、资源泄漏、错误处理缺失）
 - P2：因果链不严谨，中危（命名混乱、规范偏差、可维护性差）
 - P3：建议优化
@@ -660,7 +679,7 @@ def run_semantic_review(target: str) -> dict:
 ## 输出格式
 JSON 数组，每个问题包含：
 - "severity": "P0"|"P1"|"P2"|"P3"
-- "category": 问题类别（如 INPUT_NOT_VALIDATED / RACE_CONDITION / OVERFLOW_RISK）
+- "category": 问题类别（如 INPUT_NOT_VALIDATED / RACE_CONDITION / OVERFLOW_RISK / MEMORY_LEAK）
 - "line": 行号（0表示整体）
 - "message": 具体问题描述（要写清楚因果链：P[主体] → E[输入问题] → F[结果影响]）
 - "suggestion": 修复建议
