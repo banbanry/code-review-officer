@@ -34,6 +34,66 @@ from pathlib import Path
 from typing import Optional
 
 
+# ========== L8 后处理：去重 + 误报过滤 + 严重级校准 ==========
+
+def l8_postprocess(findings: list) -> list:
+    """L8 结果后处理：去重、过滤明显误报、校准严重级"""
+    import re
+
+    # 1. 过滤明显误报（太主观、没有实质问题的）
+    false_positive_patterns = [
+        r"命名.*不够.*好",
+        r"建议.*加.*注释",
+        r"可以.*优化.*可读性",
+        r"代码.*风格.*不一致",
+    ]
+    filtered = []
+    for f in findings:
+        msg = f.get("message", "")
+        is_fp = False
+        for pat in false_positive_patterns:
+            if re.search(pat, msg):
+                is_fp = True
+                break
+        if not is_fp:
+            filtered.append(f)
+
+    # 2. 去重：同文件 + 同 category + 行号相差 < 3 行的合并
+    deduped = []
+    for f in filtered:
+        is_dup = False
+        for i, d in enumerate(deduped):
+            if (f.get("file") == d.get("file") and
+                f.get("category") == d.get("category") and
+                abs(f.get("line", 0) - d.get("line", 0)) < 3):
+                # 合并：保留严重级更高的那个
+                sev_order = {"p0": 4, "p1": 3, "p2": 2, "p3": 1}
+                if sev_order.get(f.get("severity", "p3"), 0) > sev_order.get(d.get("severity", "p3"), 0):
+                    deduped[i] = f
+                is_dup = True
+                break
+        if not is_dup:
+            deduped.append(f)
+
+    # 3. 严重级校准：统一标准
+    # P0 必须是因果链完全断裂（崩溃级）
+    for f in deduped:
+        sev = f.get("severity", "p3").lower()
+        cat = f.get("category", "")
+        msg = f.get("message", "")
+
+        # 如果标了 P0 但 category 不是崩溃级，降到 P1
+        if sev == "p0":
+            crash_categories = ["NULL_DEREF", "DIV_ZERO", "RACE_CONDITION", "TAINT_PROPAGATION", "USE_AFTER_FREE"]
+            if not any(cc in cat.upper() for cc in crash_categories):
+                # 再看 message 里有没有崩溃关键词
+                if not any(kw in msg for kw in ["崩溃", "crash", "undefined behavior", "ub", "segfault"]):
+                    f["severity"] = "p1"
+                    f["severity_downgraded"] = True
+
+    return deduped
+
+
 # ========== 工具检测 ==========
 
 def detect_tools() -> dict:
@@ -771,6 +831,8 @@ JSON 数组，每个问题包含：
                         "suggestion": issue.get("suggestion", ""),
                     })
         
+        # L8 后处理：去重 + 误报过滤 + 严重级校准
+        findings = l8_postprocess(findings)
         return {"status": "ok", "findings": findings, "count": len(findings)}
     except Exception as e:
         return {"status": "error", "findings": [], "error": str(e)}
