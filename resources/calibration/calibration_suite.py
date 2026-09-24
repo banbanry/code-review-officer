@@ -209,6 +209,248 @@ if user is not None:  # 已经判空了
 ]
 
 
+# ========== C 语言用例（参考 cppcheck 典型规则）==========
+
+C_TRUE_POSITIVES = [
+    {
+        "id": "TP-C01",
+        "severity": "p0",
+        "category": "NULL_DEREF",
+        "code": """
+#include <stdlib.h>
+void func() {
+    char *buf = malloc(1024);
+    strcpy(buf, "hello");
+}
+""",
+        "expected": "空指针解引用（malloc 没判空）",
+    },
+    {
+        "id": "TP-C02",
+        "severity": "p0",
+        "category": "BUFFER_OVERFLOW",
+        "code": """
+void func(char *input) {
+    char buf[100];
+    strcpy(buf, input);
+}
+""",
+        "expected": "缓冲区溢出（strcpy）",
+    },
+    {
+        "id": "TP-C03",
+        "severity": "p1",
+        "category": "MEMORY_LEAK",
+        "code": """
+void func() {
+    char *buf = malloc(1024);
+    if (data == NULL) {
+        return;
+    }
+    free(buf);
+}
+""",
+        "expected": "内存泄漏（错误路径没释放）",
+    },
+    {
+        "id": "TP-C04",
+        "severity": "p0",
+        "category": "DIV_ZERO",
+        "code": """
+float avg(float total, int count) {
+    return total / count;
+}
+""",
+        "expected": "除零风险",
+    },
+    {
+        "id": "TP-C05",
+        "severity": "p1",
+        "category": "UNINITIALIZED_VAR",
+        "code": """
+int sum() {
+    int sum;
+    for (int i = 0; i < 10; i++) {
+        sum += i;
+    }
+    return sum;
+}
+""",
+        "expected": "未初始化变量",
+    },
+    {
+        "id": "TP-C06",
+        "severity": "p0",
+        "category": "DOUBLE_FREE",
+        "code": """
+void func() {
+    char *buf = malloc(1024);
+    free(buf);
+    free(buf);
+}
+""",
+        "expected": "双重释放",
+    },
+    {
+        "id": "TP-C07",
+        "severity": "p1",
+        "category": "UNSIGNED_UNDERFLOW",
+        "code": """
+void decrement(uint8_t *cnt) {
+    (*cnt)--;
+}
+""",
+        "expected": "无符号下溢",
+    },
+    {
+        "id": "TP-C08",
+        "severity": "p0",
+        "category": "RETURN_LOCAL_ADDR",
+        "code": """
+int* get_value() {
+    int x = 42;
+    return &x;
+}
+""",
+        "expected": "返回局部变量地址",
+    },
+    {
+        "id": "TP-C09",
+        "severity": "p1",
+        "category": "FORMAT_STRING",
+        "code": """
+void log_msg(char *user_input) {
+    printf(user_input);
+}
+""",
+        "expected": "格式化字符串漏洞",
+    },
+    {
+        "id": "TP-C10",
+        "severity": "p0",
+        "category": "RACE_CONDITION",
+        "code": """
+volatile int flag = 0;
+void ISR() { flag = 1; }
+void main_loop() {
+    if (flag) {
+        // handle
+    }
+}
+""",
+        "expected": "竞态条件（ISR 与主循环共享变量）",
+    },
+]
+
+
+C_FALSE_POSITIVES = [
+    {
+        "id": "FP-C01",
+        "code": """
+#include <stdlib.h>
+void func() {
+    char *buf = malloc(1024);
+    if (buf == NULL) {
+        return;
+    }
+    strcpy(buf, "hello");
+}
+""",
+        "expected": "不应该报空指针（已经判空）",
+    },
+    {
+        "id": "FP-C02",
+        "code": """
+void func(char *input) {
+    char buf[100];
+    strncpy(buf, input, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\\0';
+}
+""",
+        "expected": "不应该报缓冲区溢出（用了 strncpy）",
+    },
+    {
+        "id": "FP-C03",
+        "code": """
+// strcpy(buf, input);  // 这是注释里的
+""",
+        "expected": "不应该报注释里的代码",
+    },
+    {
+        "id": "FP-C04",
+        "code": """
+float avg(float total, int count) {
+    if (count == 0) return 0;
+    return total / count;
+}
+""",
+        "expected": "不应该报除零（已经检查了）",
+    },
+    {
+        "id": "FP-C05",
+        "code": """
+int sum() {
+    int sum = 0;
+    for (int i = 0; i < 10; i++) {
+        sum += i;
+    }
+    return sum;
+}
+""",
+        "expected": "不应该报未初始化变量",
+    },
+    {
+        "id": "FP-C06",
+        "code": """
+void func() {
+    char *buf = malloc(1024);
+    free(buf);
+    buf = NULL;
+    free(buf);
+}
+""",
+        "expected": "不应该报双重释放（free 后置了 NULL）",
+    },
+    {
+        "id": "FP-C07",
+        "code": """
+void decrement(uint8_t *cnt) {
+    if (*cnt > 0) {
+        (*cnt)--;
+    }
+}
+""",
+        "expected": "不应该报无符号下溢（已经检查了）",
+    },
+    {
+        "id": "FP-C08",
+        "code": """
+int get_value() {
+    int x = 42;
+    return x;
+}
+""",
+        "expected": "不应该报返回局部变量地址",
+    },
+    {
+        "id": "FP-C09",
+        "code": """
+void log_msg(const char *msg) {
+    printf("Received: %s", msg);
+}
+""",
+        "expected": "不应该报格式化字符串（格式串固定）",
+    },
+    {
+        "id": "FP-C10",
+        "code": """
+int a = 5 / 2;
+""",
+        "expected": "不应该报除零（常量除法）",
+    },
+]
+
+
 def run_calibration(scanner_func) -> dict:
     """
     跑校准测试：

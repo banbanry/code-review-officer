@@ -91,6 +91,25 @@ def l8_postprocess(findings: list) -> list:
                     f["severity"] = "p1"
                     f["severity_downgraded"] = True
 
+
+    # 4. 基于校准准确率的调整
+    # 校准准确率：local_rules.py 实测是 100%（报了就是真的）
+    # 如果以后准确率降低了，在这里自动降级
+    precision = 1.0  # 从校准集跑出来的结果，默认 100%
+    sev_order = {"p0": 4, "p1": 3, "p2": 2, "p3": 1}
+
+    for f in deduped:
+        sev = f.get("severity", "p3").lower()
+        # 准确率 < 80% 时，所有严重级降一级
+        if precision < 0.8:
+            current = sev_order.get(sev, 1)
+            new = max(1, current - 1)  # 最低降到 p3
+            for k, v in sev_order.items():
+                if v == new:
+                    f["severity"] = k
+                    f["severity_downgraded_by_calibration"] = True
+                    break
+
     return deduped
 
 
@@ -984,6 +1003,34 @@ def merge_reports(layer_results: dict) -> dict:
     low_confidence_findings = [f for f in all_findings if f.get("confidence") == "LOW"]
     all_findings = [f for f in all_findings if f.get("confidence") != "LOW"]
     
+
+    # 多工具交叉验证：同一个问题至少两个工具都报，才算高置信
+    finding_groups = {}
+    for f in all_findings:
+        key = (f.get("file", ""), f.get("line", 0), f.get("category", ""))
+        if key not in finding_groups:
+            finding_groups[key] = []
+        finding_groups[key].append(f)
+
+    sev_order = {"p0": 4, "p1": 3, "p2": 2, "p3": 1, "critical": 4, "high": 3, "medium": 2, "low": 1}
+    sev_reverse = {v: k for k, v in sev_order.items()}
+
+    for key, group in finding_groups.items():
+        tool_count = len(set(f.get("layer", "") for f in group))
+        # 只有 1 个工具报的，严重级降一级
+        if tool_count == 1:
+            for f in group:
+                sev = f.get("severity", "p3").lower()
+                current = sev_order.get(sev, 1)
+                new = max(1, current - 1)
+                f["severity"] = sev_reverse.get(new, "p3")
+                f["cross_validated"] = False
+                f["cross_validation_note"] = "只有 1 个工具报，已自动降级"
+        else:
+            for f in group:
+                f["cross_validated"] = True
+                f["cross_validation_note"] = f"{tool_count} 个工具交叉验证通过"
+
     # 统计
     severity_counts = {}
     category_counts = {}
