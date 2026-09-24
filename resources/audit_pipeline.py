@@ -392,6 +392,33 @@ def _run_python_smoke_test(target: str, findings: list) -> dict:
     return {"status": "ok", "findings": findings, "count": len(findings),
             "py_files_checked": len(py_files), "syntax_errors": syntax_errors}
 
+def run_local_rules(target: str) -> dict:
+    """L1/L3 补充：本地白盒规则匹配（fallback 用）
+    当 Semgrep/bandit 不可用时，用我们自己的规则保底。
+    """
+    try:
+        import sys
+        sys.path.insert(0, os.path.dirname(__file__))
+        from local_rules import scan_target
+
+        findings_raw = scan_target(target)
+        findings = []
+        for f in findings_raw:
+            findings.append({
+                "layer": "L1-LocalRules",
+                "tool": "local-rules",
+                "file": f.get("file", ""),
+                "line": f.get("line", 0),
+                "severity": f.get("severity", "p2"),
+                "category": f.get("category", ""),
+                "message": f.get("message", ""),
+                "rule_id": f.get("rule_id", ""),
+            })
+        return {"status": "ok", "findings": findings, "count": len(findings)}
+    except Exception as e:
+        return {"status": "error", "findings": [], "error": str(e)}
+
+
 def run_semgrep(target: str, binary: str) -> dict:
     """L1: Semgrep 多语言静态分析"""
     try:
@@ -608,10 +635,8 @@ def run_ocr_review(target: str, binary: str) -> dict:
     """
     findings = []
     try:
-        # 检查是否是 git 仓库
-        if not os.path.exists(os.path.join(target, ".git")):
-            return {"status": "skipped", "findings": [], "count": 0,
-                    "reason": "非 git 仓库，ocr 仅支持 git diff 审查"}
+        # ocr scan 是全文件扫描，不需要 git 仓库
+        # 只要 ocr 二进制能跑就行（LLM key 已在 ocr 自己的 config 里）
         
         # 运行 ocr scan
         result = subprocess.run(
@@ -1125,6 +1150,10 @@ def main():
         print("[L3] 运行 bandit...")
         layer_results["L3-bandit"] = run_bandit(target, tools["bandit"])
         print(f"     -> {layer_results['L3-bandit'].get('count', 0)} 项")
+    
+    print("[L1/L3-补充] 运行本地白盒规则...")
+    layer_results["L1-LocalRules"] = run_local_rules(target)
+    print(f"     -> {layer_results['L1-LocalRules'].get('count', 0)} 项")
     
     if "gitleaks" in tools:
         print("[L4] 运行 gitleaks...")
