@@ -101,6 +101,10 @@ def detect_tools() -> dict:
             tools["pef_review"] = p
             break
     
+    
+    # L8 增强：Open Code Review (ocr)
+    if shutil.which("ocr"):
+        tools["ocr"] = shutil.which("ocr")
     return tools
 
 
@@ -533,6 +537,52 @@ def run_cle_probe(target: str, script: str) -> dict:
                 except json.JSONDecodeError:
                     pass
         return {"status": "ok", "findings": findings, "count": len(findings)}
+    except Exception as e:
+        return {"status": "error", "findings": [], "error": str(e)}
+
+
+def run_ocr_review(target: str, binary: str) -> dict:
+    """L8 增强：Open Code Review (ocr) 行级精准审查
+    依赖：git 仓库 + LLM 配置（OCR_LLM_URL 等）
+    不可用时自动退回 Inline 模式
+    """
+    findings = []
+    try:
+        # 检查是否是 git 仓库
+        if not os.path.exists(os.path.join(target, ".git")):
+            return {"status": "skipped", "findings": [], "count": 0,
+                    "reason": "非 git 仓库，ocr 仅支持 git diff 审查"}
+        
+        # 运行 ocr scan
+        result = subprocess.run(
+            [binary, "scan", "--path", target, "--format", "json"],
+            capture_output=True, text=True, timeout=300, cwd=target
+        )
+        
+        if result.returncode != 0:
+            return {"status": "error", "findings": [], "error": f"ocr 退出码 {result.returncode}: {result.stderr[:200]}"}
+        
+        # 解析 JSON 输出
+        data = json.loads(result.stdout)
+        comments = data.get("comments", [])
+        
+        for c in comments:
+            findings.append({
+                "layer": "L8-ocr",
+                "tool": "open-code-review",
+                "file": c.get("file", ""),
+                "line": c.get("line", 0),
+                "severity": c.get("severity", "P2").lower(),
+                "category": c.get("category", ""),
+                "message": c.get("message", ""),
+                "suggestion": c.get("suggestion", ""),
+                "source": "ocr",
+            })
+        
+        return {"status": "ok", "findings": findings, "count": len(findings)}
+    
+    except json.JSONDecodeError:
+        return {"status": "error", "findings": [], "error": "ocr JSON 解析失败"}
     except Exception as e:
         return {"status": "error", "findings": [], "error": str(e)}
 
@@ -990,18 +1040,34 @@ def main():
     else:
         print(f"     -> {st.get('count', 0)} 项")
     
-    # L8 语义审查（LLM 理解代码意图）
-    print("[L8] 运行 LLM 语义审查（逻辑正确性+AI幻觉检测）...")
-    layer_results["L8-Semantic"] = run_semantic_review(target)
-    st = layer_results["L8-Semantic"]
-    if st["status"] == "skipped":
-        print(f"     -> 跳过: {st.get('reason', '')}")
-    elif st["status"] == "error":
-        print(f"     -> 错误: {st.get('error', '')}")
-    elif st["status"] == "inline_pending":
-        print(f"     -> Inline 模式: 由对话模型完成审查")
-    else:
-        print(f"     -> {st.get('count', 0)} 项")
+    # L8 语义审查（优先 ocr 增强，失败退回 Inline）
+    layer_results["L8-Semantic"] = {"status": "skipped", "findings": [], "count": 0}
+    
+    # 先试 ocr（如果已安装）
+    if "ocr" in tools:
+        print("[L8] 运行 ocr 行级精准审查...")
+        ocr_result = run_ocr_review(target, tools["ocr"])
+        if ocr_result["status"] == "ok" and ocr_result["count"] > 0:
+            layer_results["L8-Semantic"] = ocr_result
+            print(f"     -> ocr 检出 {ocr_result['count']} 项")
+        else:
+            reason = ocr_result.get("reason", ocr_result.get("error", ""))
+            print(f"     -> ocr 不可用（{reason}），退回 Inline 模式")
+    
+    # 退回 Inline 模式
+    if layer_results["L8-Semantic"]["status"] != "ok":
+        print("[L8] 运行 LLM 语义审查（Inline 模式）...")
+        layer_results["L8-Semantic"] = run_semantic_review(target)
+        st = layer_results["L8-Semantic"]
+        if st["status"] == "skipped":
+            print(f"     -> 跳过: {st.get('reason', '')}")
+        elif st["status"] == "error":
+            print(f"     -> 错误: {st.get('error', '')}")
+        elif st["status"] == "inline_pending":
+            print(f"     -> Inline 模式: 由对话模型完成审查")
+        else:
+            print(f"     -> {st.get('count', 0)} 项")
+    
     
     # L9 PEF 结构化审查（三元分解+因果链+七维评分+双闸门）
     if "pef_review" in tools:
